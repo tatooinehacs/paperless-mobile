@@ -1,12 +1,12 @@
-import 'dart:developer' as dev;
 import 'dart:io';
-import 'dart:math';
 
 import 'package:edge_detection/edge_detection.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_doc_scanner/flutter_doc_scanner.dart';
 import 'package:paperless_mobile/api/paperless_api.dart';
 import 'package:paperless_mobile/constants.dart';
 import 'package:paperless_mobile/core/bloc/loading_status.dart';
@@ -224,29 +224,51 @@ class _ScannerPageState extends State<ScannerPage>
     if (!isGranted) {
       return;
     }
-    final file = await FileService.instance.allocateTemporaryFile(
-      PaperlessDirectoryType.scans,
-      extension: 'jpeg',
-      create: true,
-    );
-    if (kDebugMode) {
-      dev.log('[ScannerPage] Created temporary file: ${file.path}');
-    }
 
-    final success = await EdgeDetection.detectEdge(file.path);
-    if (!success) {
-      if (kDebugMode) {
-        dev.log(
-          '[ScannerPage] Scan either not successful or canceled by user.',
-        );
+    try {
+      final result = await FlutterDocScanner().getScannedDocumentAsImages(
+        page: 3,
+      );
+
+      if (result == null || result.images.isEmpty) {
+        if (kDebugMode) {
+          dev.log('[ScannerPage] No image returned from the document scanner.');
+        }
+        return;
       }
-      return;
+
+      final scannedPath = result.images.first;
+      final file = File(scannedPath);
+      if (!await file.exists()) {
+        if (kDebugMode) {
+          dev.log(
+            '[ScannerPage] Scanner returned a file that does not exist: $scannedPath',
+          );
+        }
+        return;
+      }
+
+      if (!context.mounted) return;
+      context.read<DocumentScannerCubit>().addScan(file);
+    } on PlatformException catch (error) {
+      if (kDebugMode) {
+        dev.log('[ScannerPage] FlutterDocScanner failed: ${error.message}');
+      }
+      if (!context.mounted) return;
+      showSnackBar(
+        context,
+        'Document scanning failed. Please try again.',
+      );
+    } on Exception catch (error) {
+      if (kDebugMode) {
+        dev.log('[ScannerPage] Document scan exception: $error');
+      }
+      if (!context.mounted) return;
+      showSnackBar(
+        context,
+        'Document scanning failed. Please try again.',
+      );
     }
-    if (kDebugMode) {
-      dev.log('[ScannerPage] Wrote image to temporary file: ${file.path}');
-    }
-    if (!context.mounted) return;
-    context.read<DocumentScannerCubit>().addScan(file);
   }
 
   void _onPrepareDocumentUpload(BuildContext context, List<File> scans) async {
@@ -262,11 +284,7 @@ class _ScannerPageState extends State<ScannerPage>
     ).push<DocumentUploadResult>(context);
     if (uploadResult?.success ?? false) {
       if (!context.mounted) return;
-      // For paperless version older than 1.11.3, task id will always be null!
       context.read<DocumentScannerCubit>().reset();
-      // context
-      //     .read<PendingTasksNotifier>()
-      //     .listenToTaskChanges(uploadResult!.taskId!);
     }
   }
 
@@ -378,17 +396,9 @@ class _ScannerPageState extends State<ScannerPage>
         title: filename,
         fileExtension: extension,
       ).push<DocumentUploadResult>(context);
-      // if (uploadResult.success && uploadResult.taskId != null) {
-      //   context
-      //       .read<PendingTasksNotifier>()
-      //       .listenToTaskChanges(uploadResult.taskId!);
-      // }
     }
   }
 
-  ///
-  /// Returns the file bytes of either a single file or multiple images concatenated into a single pdf.
-  ///
   Future<AssembledFile> _assembleFileBytes(
     final List<File> files, {
     bool forcePdf = false,
